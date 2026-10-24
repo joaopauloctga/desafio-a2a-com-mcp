@@ -1,13 +1,14 @@
 """Tools do servidor MCP. O servidor.py registra a lista TOOLS, na ordem do wire 01.
 
-Fase 1: só listar_salas funciona. As regras de domínio (fase 2) e o MRTR (fase 3) ainda não
-existem, então as outras duas tools são stubs com o inputSchema final.
+Fase 2: as três tools funcionam no caminho livre. As regras ficam em regras.py. Em conflito,
+reservar_sala devolve um ToolError provisório; a fase 3 troca isso pelo MRTR.
 """
 
 from mcp.server.mcpserver.exceptions import ToolError
 
 import dados_repo
-from schemas import Disponibilidade, ListaDeSalas, ReservaOut, SalaOut
+import regras
+from schemas import ConflitoOut, Disponibilidade, ListaDeSalas, ReservaOut, SalaOut
 
 
 def listar_salas() -> ListaDeSalas:
@@ -17,12 +18,28 @@ def listar_salas() -> ListaDeSalas:
 
 def consultar_disponibilidade(sala: str, inicio: str, fim: str) -> Disponibilidade:
     """Diz se uma sala esta livre no intervalo, e quais reservas conflitam."""
-    raise ToolError("Nao implementado nesta fase")
+    ini, fi = regras.validar(sala, inicio, fim)
+    ocupadas = regras.conflitos(sala, ini, fi)
+    return Disponibilidade(
+        sala=sala, livre=not ocupadas, conflitos=[ConflitoOut(**r) for r in ocupadas]
+    )
 
 
 def reservar_sala(sala: str, inicio: str, fim: str, responsavel: str) -> ReservaOut:
     """Reserva uma sala. Se o intervalo estiver ocupado, pergunta qual alternativa usar."""
-    raise ToolError("Nao implementado nesta fase")
+    regras.validar(sala, inicio, fim)
+    r = regras.reservar_se_livre(sala, inicio, fim, responsavel)
+    if r is None:
+        # Provisório (fase 2): a fase 3 troca por MRTR com alternativas.
+        raise ToolError("Sala ocupada no intervalo")
+    return ReservaOut(
+        reserva=r["id"],
+        sala=sala,
+        inicio=inicio,
+        fim=fim,
+        responsavel=responsavel,
+        politica=regras.versao_politica(),
+    )
 
 
 TOOLS = [listar_salas, consultar_disponibilidade, reservar_sala]
