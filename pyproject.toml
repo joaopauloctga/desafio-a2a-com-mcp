@@ -1,0 +1,14 @@
+[project]
+name = "a-ponte"
+version = "0.1.0"
+description = "Desafio A Ponte: agente A2A com MCP por dentro"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp==2.3.0",
+    "uvicorn==0.54.0",
+    "starlette==1.7.0",
+]
+
+[tool.uv]
+# Nada publicado depois de 2026-10-10 (duas semanas antes do desenvolvimento), inclusive as transitivas.
+exclude-newer = "2026-10-10T00:00:00Z"
