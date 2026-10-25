@@ -1,6 +1,6 @@
 """Regras de domínio: validação de sala e política, sobreposição e criação de reservas.
 
-A validação fica separada do corpo das tools para o resolver MRTR da fase 3 reaproveitá-la.
+A validação fica separada do corpo das tools porque o resolver do MRTR (escolha_de_sala) também a usa.
 """
 
 import re

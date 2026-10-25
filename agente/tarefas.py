@@ -21,7 +21,7 @@ def novo_id(prefixo: str) -> str:
 
 @dataclass
 class Pausa:
-    """Estado interno de uma Task em INPUT_REQUIRED (fase 6). Nunca é serializado para o A2A."""
+    """Estado interno de uma Task em INPUT_REQUIRED. Nunca é serializado para o A2A."""
 
     request_state: str  # opaco: guardado e ecoado, nunca decodificado
     chave: str  # única chave de inputRequests
