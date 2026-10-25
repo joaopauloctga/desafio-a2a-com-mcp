@@ -64,6 +64,21 @@ def conflitos(sala: str, ini: datetime, fi: datetime) -> list[dict]:
     ]
 
 
+def alternativas(sala: str, ini: datetime, fi: datetime, maximo: int = 3) -> list[str]:
+    """Ids das salas livres em [ini, fi) com capacidade >= a da sala pedida (sem ela).
+
+    Ordem: capacidade crescente e, no empate, id. No máximo `maximo`.
+    """
+    pedida = next(s for s in dados_repo.SALAS if s["id"] == sala)
+    candidatas = [
+        s
+        for s in dados_repo.SALAS
+        if s["id"] != sala and s["capacidade"] >= pedida["capacidade"] and not conflitos(s["id"], ini, fi)
+    ]
+    candidatas.sort(key=lambda s: (s["capacidade"], s["id"]))
+    return [s["id"] for s in candidatas[:maximo]]
+
+
 def versao_politica() -> str:
     primeira = dados_repo.POLITICA.splitlines()[0]
     return re.sub(r"^versao:\s*", "", primeira).strip()

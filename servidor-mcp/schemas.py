@@ -36,3 +36,9 @@ class ReservaOut(BaseModel):
     responsavel: str | None = None
     politica: str | None = None
     motivo: str | None = None
+
+
+class EscolhaDeSala(BaseModel):
+    """Base da pergunta do MRTR. O resolver cria, na hora, uma subclasse com `sala` restrita ao enum."""
+
+    sala: str

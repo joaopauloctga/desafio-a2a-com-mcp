@@ -7,16 +7,39 @@ e o log de cada request em log_asgi.py. A validação do _meta e dos headers esp
 import os
 
 import uvicorn
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import MCPServer, RequestStateSecurity
+from dotenv import load_dotenv
 
 import dados_repo
 from log_asgi import LogRequests
 from tools import TOOLS
 
+load_dotenv()
+
 HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_PORT", "7301"))
 
-mcp = MCPServer("central-de-salas", version="1.0.0")
+
+def _ler_secret() -> str:
+    """Chave de integridade do requestState: só do ambiente, sem valor padrão, nunca logada."""
+    secret = os.environ.get("REQUEST_STATE_SECRET", "")
+    if not secret:
+        raise SystemExit(
+            "REQUEST_STATE_SECRET ausente. Defina uma chave de pelo menos 32 bytes, por exemplo:\n"
+            '  export REQUEST_STATE_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")'
+        )
+    if len(secret.encode()) < 32:
+        raise SystemExit("REQUEST_STATE_SECRET curta demais: use pelo menos 32 bytes.")
+    return secret
+
+
+# Sem request_state_security explícito o SDK sela com uma chave efêmera por processo, e um retry
+# depois de um restart seria rejeitado. TTL de 10 minutos (o permitido é de 5 a 30).
+mcp = MCPServer(
+    "central-de-salas",
+    version="1.0.0",
+    request_state_security=RequestStateSecurity(keys=[_ler_secret()], ttl=600),
+)
 
 for tool in TOOLS:
     mcp.add_tool(tool)
