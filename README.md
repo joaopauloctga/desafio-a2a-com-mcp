@@ -28,7 +28,7 @@ python3 validador/validar.py --agente http://localhost:7300 --mcp http://localho
 
 Reinicie **os dois processos** antes de cada execução do validador: as reservas ficam em memória e sobras de uma execução anterior geram falhas falsas. A primeira linha do validador é o trace-id; procure-o no stderr do servidor MCP.
 
-Variáveis de ambiente (todas opcionais, no shell ou no `.env`): `MCP_PORT` (padrão `7301`), `MCP_HOST` (padrão `127.0.0.1`), `AGENTE_PORT` (padrão `7300`) e `MCP_URL` (padrão `http://127.0.0.1:7301/mcp`, usada pelo agente).
+Variáveis de ambiente (todas opcionais, no shell ou no `.env`): `MCP_PORT` (padrão `7301`), `MCP_HOST` (padrão `127.0.0.1`), `AGENTE_PORT` (padrão `7300`), `AGENTE_HOST` (padrão `127.0.0.1`), `AGENTE_URL_PUBLICA` (padrão `http://AGENTE_HOST:AGENTE_PORT`, vai na URL do Agent Card) e `MCP_URL` (padrão `http://127.0.0.1:7301/mcp`, usada pelo agente).
 
 ## Onde a ponte acontece
 
@@ -41,6 +41,8 @@ Variáveis de ambiente (todas opcionais, no shell ou no `.env`): `MCP_PORT` (pad
 **Regras de domínio no servidor MCP.** A janela de uso é checada em `-03:00` (os horários são convertidos antes), com `inicio` e `fim` na mesma data local. A sobreposição é semiaberta: reservas que só encostam não conflitam. A validação fica em `servidor-mcp/regras.py`, usada pelas duas tools.
 
 **A2A à mão.** O lado A2A é um servidor JSON-RPC escrito com Starlette, sem `a2a-sdk`. Com o `a2a-sdk` 1.2.2 o card e o `SendMessage` saem na forma esperada, mas o SDK exige o header `A2A-Version: 1.0` (que o validador não envia) e devolve `GetTask` sem o embrulho `result.task` do exemplo de wire. Escrever à mão também dá controle total da máquina de estados.
+
+**Task A2A.** A Task nasce em `SUBMITTED`, passa por `WORKING` e para em `COMPLETED`, `FAILED`, `CANCELED` ou `INPUT_REQUIRED`; o `SendMessage` é síncrono e devolve a Task no estado em que parou. Estado terminal é definitivo: um `SendMessage` com `taskId` de Task terminal devolve o erro JSON-RPC `-32004` (UnsupportedOperation) e a Task não muda; `taskId` inexistente devolve `-32001` (TaskNotFound). Texto fora do formato, `isError` da tool e falha de conexão com o MCP terminam em `FAILED`. A mensagem de `isError` vai sem o prefixo `Error executing tool ...` do SDK.
 
 **Cliente MCP do agente: limitação do SDK.** O agente (`agente/cliente_mcp.py`) usa o `Client` do SDK com `session.call_tool(..., allow_input_required=True)`, que devolve o `input_required` cru e deixa controlar `input_responses` e `request_state`. O SDK gera um id novo a cada chamada. A limitação está em `mcp/client/session.py`, em `ClientSession._build_capabilities`:
 

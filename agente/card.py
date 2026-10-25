@@ -1,0 +1,41 @@
+"""Agent Card A2A v1.0 (mesmo corpo de exemplos/wire/07-a2a-agent-card.json)."""
+
+import os
+
+EXEMPLO = "reservar sala=sala-garagem inicio=2026-11-03T14:00:00-03:00 fim=2026-11-03T15:00:00-03:00 responsavel=Marty"
+
+
+def url_base() -> str:
+    """URL pública do agente: `AGENTE_URL_PUBLICA` ou, sem ela, `http://AGENTE_HOST:AGENTE_PORT`."""
+    publica = os.environ.get("AGENTE_URL_PUBLICA")
+    if publica:
+        return publica.rstrip("/")
+    host = os.environ.get("AGENTE_HOST", "127.0.0.1")
+    porta = os.environ.get("AGENTE_PORT", "7300")
+    return f"http://{host}:{porta}"
+
+
+def agent_card() -> dict:
+    return {
+        "name": "Central de Salas",
+        "description": "Reserva salas de reuniao da Hill Valley Tech.",
+        "provider": {"organization": "Hill Valley Tech", "url": "https://hillvalley.example"},
+        "version": "1.0.0",
+        "supportedInterfaces": [
+            {"url": f"{url_base()}/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
+        ],
+        "capabilities": {"streaming": False, "pushNotifications": False, "extendedAgentCard": False},
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [
+            {
+                "id": "reservar-sala",
+                "name": "Reservar sala",
+                "description": "Reserva uma sala em um intervalo. Se houver conflito, pergunta qual alternativa usar.",
+                "tags": ["salas", "agenda"],
+                "inputModes": ["text/plain"],
+                "outputModes": ["text/plain"],
+                "examples": [EXEMPLO],
+            }
+        ],
+    }
