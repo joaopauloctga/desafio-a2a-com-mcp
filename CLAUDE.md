@@ -19,8 +19,7 @@ A2A client ──SendMessage/GetTask──▶ agente (:7300) ──HTTP MCP─�
 
 ```
 servidor-mcp/
-  servidor.py    MCPServer("central-de-salas"); reads REQUEST_STATE_SECRET (env or .env); registers the tools and politica://uso; wraps the app in the log
-  tools.py       listar_salas, consultar_disponibilidade, reservar_sala and the MRTR resolver escolha_de_sala
+  servidor.py    MCPServer("central-de-salas"); reads REQUEST_STATE_SECRET (env or .env); the tools listar_salas, consultar_disponibilidade, reservar_sala, the MRTR resolver escolha_de_sala and politica://uso; wraps the app in the log
   regras.py      validation (room, interval, window, duration, in that order), overlap, alternatives, reservar_se_livre (check + write under a lock)
   schemas.py     output models; class names become the outputSchema titles in tools/list (wire 01), so renaming one changes the wire
   dados_repo.py  loads dados/; RESERVAS is the in-memory store
@@ -48,7 +47,7 @@ uv run python agente/agente.py           # :7300
 python3 validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301
 ```
 
-Env vars (all optional): `MCP_PORT`, `MCP_HOST`, `AGENTE_PORT`, `AGENTE_HOST`, `AGENTE_URL_PUBLICA`, `MCP_URL`. Never print or commit the `.env` contents.
+Env vars (all optional): `MCP_PORT`, `MCP_HOST`, `AGENTE_PORT`, `AGENTE_HOST`, `AGENTE_URL_PUBLICA`, `MCP_URL`. Only the MCP server reads `.env`; the agent's vars must come from the shell. Never print or commit the `.env` contents.
 
 ## How to test
 
@@ -59,7 +58,8 @@ Env vars (all optional): `MCP_PORT`, `MCP_HOST`, `AGENTE_PORT`, `AGENTE_HOST`, `
 - The validator has no single-check mode: checks 1–20 hit the MCP server and 21–36 hit the agent. To exercise only the MCP server, point `--agente` at an empty port.
 - The validator's first line is the trace-id; `grep -a` it in the MCP stderr (`-a` because a log truncated while open gets NUL bytes). A Task that paused and resumed shows `tools/list` → `resources/read` → `tools/call` → `tools/call ... retry=sim`: different ids, same trace-id.
 - Manual A2A tests: the "Teste manual com curl" block in the README runs as-is in bash and zsh.
-- Direct MCP tests: replay the request body and headers of `exemplos/wire/*.json` (03 conflict → `input_required`, 04 retry, 06 no capability → `-32021`, 11 decline). Expected differences: the `inputRequests` key is `tools:escolha_de_sala` (the wire says `__main__:escolha_de_sala`), the `requestState` value, and reservation ids.
+- Direct MCP tests: replay the request body and headers of `exemplos/wire/*.json` (03 conflict → `input_required`, 04 retry, 06 no capability → `-32021`, 11 decline). Only the `requestState` value differs: replayed in file order on a freshly started server, the responses match the files exactly, key and reservation ids included. 04 and 11 work as-is once their `requestState` is swapped for one the server issued for the same `arguments`.
+- Evaluator steps 11–13: the "Teste direto no servidor MCP" block in the README, on a freshly restarted MCP server. A retry after a restart only completes if the recomputed alternatives match the pause's; a pause issued after steps 7–10 (with `sala-mirante` booked) gets a new question after the restart.
 - The MCP Inspector speaks a revision older than `2026-07-28`. It works for `listar_salas`, `consultar_disponibilidade` and free reservations, but a conflict returns an `isError` that lists the alternatives instead of `input_required` (see "SDK quirks").
 
 ## Invariants the validator and the grader check
@@ -69,7 +69,7 @@ Env vars (all optional): `MCP_PORT`, `MCP_HOST`, `AGENTE_PORT`, `AGENTE_HOST`, `
 - Every request carries `_meta` with `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities`, or gets `-32602` with HTTP 400; mirror headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) must match or get `-32020`. The SDK enforces both.
 - Conflict in `reservar_sala` → `resultType: "input_required"` with one `inputRequests` entry (`elicitation/create`, `mode: form`, flat schema with `sala` as enum, or const for a single option) and a `requestState`. Alternatives: rooms free in that interval with capacity ≥ the requested room's, excluding it, sorted by capacity then id, max 3. None → `isError` `Sem alternativas disponiveis no intervalo`.
 - Client without `elicitation.form` on a conflict → `-32021`, HTTP 400, `data.requiredCapabilities`.
-- `requestState` is sealed by the SDK with `REQUEST_STATE_SECRET`, TTL 600 s. The server stores nothing between pause and retry, and a retry works after a restart with the same secret. Tampered or expired state, another secret, or changed `arguments` → `-32602`. It is not single-use (the validator reuses it). `decline`/`cancel` → `complete` with `reservado: false` and `motivo: "recusado"`.
+- `requestState` is sealed by the SDK with `REQUEST_STATE_SECRET`, TTL 600 s. The server stores nothing between pause and retry, and a retry works after a restart with the same secret (as long as the recomputed alternatives are unchanged; see "SDK quirks"). Tampered or expired state, another secret, or changed `arguments` → `-32602`. It is not single-use (the validator reuses it). `decline`/`cancel` → `complete` with `reservado: false` and `motivo: "recusado"`.
 
 **Agent**:
 - Per Task: `tools/list` (no hardcoded tool list; arguments built from the discovered `inputSchema`), then `politica://uso` (its version goes in the artifact's `politica`), then `tools/call`. Every MCP request propagates the trace-id of the incoming A2A `traceparent` header.
@@ -91,9 +91,10 @@ Exact domain error messages (the validator compares text; the SDK prefix is acce
 - Domain errors use `ToolError(msg)`, which keeps the message; a plain `ValueError` becomes `Error executing tool X` without it.
 - MRTR is the SDK's native mechanism: `escolha_de_sala` returns `Elicit`, bound with `Annotated[ElicitationResult[...], Resolve(escolha_de_sala)]`. Never a server→client elicitation callback: the stateless transport has no back-channel.
 - `MCPServer` must get `request_state_security=RequestStateSecurity(keys=[secret], ttl=600)` explicitly. Without it the SDK uses an ephemeral per-process key, and a retry after a restart fails even though the validator passes.
-- The `inputRequests` key is the resolver's `module:qualname`, hence `tools:escolha_de_sala`.
+- The `inputRequests` key is the resolver's `module:qualname`. The tools and the resolver live in `servidor.py`, which runs as a script, so the key is `__main__:escolha_de_sala`, the same as the wires. Moving the resolver to another module changes the key, and a client replaying the wires' key then gets a new `input_required`.
 - An `accept` outside the enum becomes `isError` on the server, so the agent checks the choice against the stored alternatives before retrying.
-- If the alternatives changed between pause and retry, the SDK asks again (a new `input_required`) instead of failing.
+- If the alternatives changed between pause and retry, the SDK asks again (a new `input_required`) instead of failing: it seals the digest of the rendered question and discards an answer to a different one (`resolve.py`, `_fulfil`). A restart wipes reservations made after startup, so it can change the list too; the README documents this with that excerpt.
+- A missing or pre-`2026-07-28` `MCP-Protocol-Version` header is treated as a legacy client (the Inspector path), not as a `-32020` mismatch.
 - Sync tools run in worker threads (`anyio.to_thread.run_sync`), hence the lock in `regras.reservar_se_livre`.
 - Clients older than `2026-07-28` make the SDK fall back to a synchronous `elicitation/create`, which fails in stateless mode. The resolver detects this (`ctx.protocol_version`, `ctx.session.can_send_request`) and raises a `ToolError` listing the alternatives.
 - `mcp.middleware` does not see requests rejected before dispatch, so logging lives in the ASGI wrapper.

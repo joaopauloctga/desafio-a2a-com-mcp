@@ -9,7 +9,7 @@ Pré-requisitos: Python 3.10 ou superior, o [uv](https://docs.astral.sh/uv/) e `
 uv sync --frozen
 
 # 2. Chave de integridade do requestState (mínimo 32 bytes), gravada no .env da raiz (ignorado pelo git).
-#    O .env-example lista as variáveis aceitas.
+#    Só o servidor MCP lê o .env; o .env-example lista as variáveis que ele aceita.
 python3 -c "import secrets; print('REQUEST_STATE_SECRET=' + secrets.token_hex(32))" > .env
 #    Alternativa sem arquivo (uma variável exportada tem precedência sobre o .env):
 #    export REQUEST_STATE_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
@@ -30,7 +30,7 @@ python3 validador/validar.py --agente http://localhost:7300 --mcp http://localho
 
 A primeira linha do validador é o trace-id. Procure-o no stderr do servidor MCP: as linhas do agente (`tools/list`, `resources/read`, `tools/call`) trazem o mesmo trace-id.
 
-Variáveis de ambiente (todas opcionais, no shell ou no `.env`): `MCP_PORT` (padrão `7301`), `MCP_HOST` (padrão `127.0.0.1`), `AGENTE_PORT` (padrão `7300`), `AGENTE_HOST` (padrão `127.0.0.1`), `AGENTE_URL_PUBLICA` (padrão `http://AGENTE_HOST:AGENTE_PORT`, vai na URL do Agent Card) e `MCP_URL` (padrão `http://127.0.0.1:7301/mcp`, usada pelo agente). Para outras portas, defina `MCP_PORT`, `AGENTE_PORT` e `MCP_URL` e passe as mesmas URLs ao validador.
+Variáveis de ambiente, todas opcionais: `MCP_PORT` (padrão `7301`), `MCP_HOST` (padrão `127.0.0.1`), `AGENTE_PORT` (padrão `7300`), `AGENTE_HOST` (padrão `127.0.0.1`), `AGENTE_URL_PUBLICA` (padrão `http://AGENTE_HOST:AGENTE_PORT`, vai na URL do Agent Card) e `MCP_URL` (padrão `http://127.0.0.1:7301/mcp`, usada pelo agente). As do servidor MCP (`MCP_PORT`, `MCP_HOST` e `REQUEST_STATE_SECRET`) valem no shell ou no `.env`; as do agente (`AGENTE_*` e `MCP_URL`) vão no shell, porque o agente não lê o `.env`. Para outras portas, defina `MCP_PORT`, `AGENTE_PORT` e `MCP_URL` e passe as mesmas URLs ao validador.
 
 ### Teste manual com curl
 
@@ -82,6 +82,44 @@ EOF
 
 No stderr do servidor MCP, cada Task do agente aparece como `tools/list`, `resources/read`, `tools/call` (a pausa) e, depois da continuação, `tools/call ... retry=sim`. Os dois `tools/call` de uma reserva pausada têm `id` diferentes, e todas as linhas da Task têm o mesmo trace-id (`4bf92f3577b34da6a3ce929d0e0e4736`, o do header `traceparent` do curl).
 
+### Teste direto no servidor MCP (passos 11 a 13 do fluxo do avaliador)
+
+**Reinicie o servidor MCP antes do passo 11**, mesmo que ele tenha acabado de ser reiniciado para os testes acima. O passo 12 reinicia o servidor de novo, e o restart apaga as reservas em memória. O retry só conclui se as alternativas recalculadas depois do restart forem as mesmas da pausa, porque o SDK sela a pergunta mostrada e, se ela mudou, pergunta de novo (veja "Retry depois de um restart" em Decisões técnicas). Depois do teste com curl acima, por exemplo, a `sala-mirante` está reservada das 14h às 15h: a pausa ofereceria só a `sala-fusca`, e o restart traria a `sala-mirante` de volta à lista.
+
+O retry é o corpo do wire 04 trocando só o `requestState`. A chave do `inputRequests` que o servidor devolve é a mesma do wire (`__main__:escolha_de_sala`); um retry com outra chave não seria reconhecido, e o SDK perguntaria de novo.
+
+```bash
+mcp_post() {  # POST no servidor MCP com os headers espelhados; corpo pela entrada padrão, status HTTP no stderr
+  curl -s -m 10 -X POST http://localhost:7301/mcp -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' \
+    -H 'Mcp-Method: tools/call' -H 'Mcp-Name: reservar_sala' -w '%{stderr}HTTP %{http_code}\n' --data-binary @-
+}
+corpo_do_wire() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["request"]["body"]))' "$1"; }
+retry() {  # corpo do wire 04 (id 4, accept da sala-fusca) com o requestState $1
+  python3 -c 'import json,sys; c=json.load(open("exemplos/wire/04-tools-call-retry.json"))["request"]["body"]; c["params"]["requestState"]=sys.argv[1]; print(json.dumps(c))' "$1"
+}
+
+# 11. Conflito com o corpo do wire 03: input_required, com o requestState
+R=$(corpo_do_wire exemplos/wire/03-tools-call-conflito-input-required.json | mcp_post)
+printf '%s\n' "$R" | python3 -m json.tool
+ESTADO=$(printf '%s' "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["requestState"])')
+#     Retry com um caractere trocado no requestState: -32602, HTTP 400
+ADULTERADO=$(python3 -c 'import sys; s=sys.argv[1]; i=len(s)//2; print(s[:i] + ("A" if s[i] != "A" else "B") + s[i+1:])' "$ESTADO")
+retry "$ADULTERADO" | mcp_post | python3 -m json.tool
+```
+
+Agora reinicie o servidor MCP (Ctrl+C no terminal 1 e `uv run python servidor-mcp/servidor.py` de novo, com o mesmo `.env`) e continue no mesmo terminal:
+
+```bash
+# 12. Retry com o requestState intacto, depois do restart: resultType "complete", reserva na sala-fusca
+retry "$ESTADO" | mcp_post | python3 -m json.tool
+
+# 13. O mesmo conflito, de um cliente sem elicitation nas capabilities (corpo do wire 06): -32021, HTTP 400
+corpo_do_wire exemplos/wire/06-erro-32021-sem-elicitation.json | mcp_post | python3 -m json.tool
+```
+
+No stderr do servidor MCP, o retry aparece como `tools/call id=4 ... retry=sim`, e a pausa como `tools/call id=3`.
+
 ## Onde a ponte acontece
 
 **(a) O `input_required` vira `TASK_STATE_INPUT_REQUIRED`:** [`agente/ponte.py:100`](agente/ponte.py#L100), em `_pausar` (definida em [`agente/ponte.py:78`](agente/ponte.py#L78)). O agente recebe o `InputRequiredResult` cru do `tools/call` (sem callback de elicitation), lê a única chave de `inputRequests` e as alternativas de `requestedSchema.properties.sala`, guarda tudo em `Task.pausa` (`agente/tarefas.py`) e muda a Task para INPUT_REQUIRED com a mensagem `alternativas: id1, id2`.
@@ -96,9 +134,22 @@ O `requestState` é opaco: fica em `Task.pausa`, por Task (não há variável gl
 
 **Por quanto tempo vale.** 10 minutos (`ttl=600`), dentro da faixa de 5 a 30 minutos do enunciado. O SDK não impõe esse teto, então a faixa é uma regra nossa.
 
+**Retry depois de um restart.** O `requestState` também sela o digest da pergunta mostrada na pausa. No retry, o resolver recalcula as alternativas e, se a pergunta não é mais a mesma, o SDK descarta a resposta e devolve um novo `input_required` com a lista atual, em vez de reservar a partir de uma lista que já não vale (`mcp/server/mcpserver/resolve.py`, em `_fulfil`):
+
+```python
+answer = res.answers.get(key)
+# An answer counts only for the rendering recorded when it was asked; an answer to
+# an unrecorded or differently-worded question re-asks instead of being consumed.
+if answer is not None and res.asked.get(key) != q:
+    logger.info("Discarding the answer for resolver %r: the question changed since it was asked", key)
+    answer = None
+```
+
+Como as reservas ficam em memória, um restart apaga as que foram criadas depois da subida. Se uma delas ocupava uma alternativa quando a pausa foi emitida, a lista muda com o restart e o retry recebe a pergunta nova, não a reserva. Com o servidor recém-iniciado antes da pausa, a lista é a mesma depois do restart e o retry conclui, como no teste direto acima. O SDK tem outro caminho de MRTR que evitaria a pergunta nova: a própria tool devolve o `InputRequiredResult`, guarda no estado selado as alternativas oferecidas e lê a resposta em `ctx.input_responses`. Mantive o `Resolve` porque, com ele, o SDK cuida do `-32021`, da validação da resposta contra o schema e da pergunta nova quando a lista muda; no outro caminho, tudo isso seria código nosso. No agente, a pergunta nova vira uma nova pausa da Task, com a lista atual.
+
 **Onde ficam as Tasks.** Na memória do processo do agente (`agente/tarefas.py`), uma estrutura por Task, com histórico, artifacts e, se estiver pausada, a `Pausa` com o `requestState` e as alternativas. Reiniciar o agente perde as Tasks; reiniciar o servidor MCP não perde a pausa, porque o estado da reserva está no `requestState`. As reservas do servidor MCP também ficam em memória, semeadas de `dados/`. A checagem de conflito e a gravação são atômicas sob uma trava (`servidor-mcp/regras.py`), porque o SDK roda tools síncronas em threads.
 
-**MRTR nativo do SDK, no servidor.** Em conflito, `reservar_sala` usa um resolver (`escolha_de_sala`, em `servidor-mcp/tools.py`) que devolve `Elicit` com até três alternativas, ligado à tool por `Annotated[ElicitationResult[...], Resolve(...)]`. O SDK responde `input_required` e verifica o retry. Não uso callback de elicitation do servidor para o cliente, porque o transporte stateless não tem canal de volta. `decline` e `cancel` concluem a chamada sem erro, com `reservado: false` e `motivo`. A chave do `inputRequests` sai `tools:escolha_de_sala`, e não `__main__:escolha_de_sala` como no exemplo de wire, por causa do módulo onde o resolver está; o cliente devolve a chave que recebe, então não importa. Erros de domínio saem como `ToolError`, para a mensagem exata chegar ao cliente. A janela de uso é checada em `-03:00` (os horários são convertidos antes), com `inicio` e `fim` na mesma data local, e a sobreposição é semiaberta: reservas que só encostam não conflitam.
+**MRTR nativo do SDK, no servidor.** Em conflito, `reservar_sala` usa um resolver (`escolha_de_sala`, em `servidor-mcp/servidor.py`) que devolve `Elicit` com até três alternativas, ligado à tool por `Annotated[ElicitationResult[...], Resolve(...)]`. O SDK responde `input_required` e verifica o retry. Não uso callback de elicitation do servidor para o cliente, porque o transporte stateless não tem canal de volta. `decline` e `cancel` concluem a chamada sem erro, com `reservado: false` e `motivo`. A chave do `inputRequests` é o `módulo:qualname` do resolver. Ele fica no `servidor.py`, junto das tools, porque esse arquivo roda como script: a chave sai `__main__:escolha_de_sala`, a mesma dos exemplos de wire, e os corpos de `exemplos/wire/` podem ser reenviados trocando só o `requestState`. Erros de domínio saem como `ToolError`, para a mensagem exata chegar ao cliente. A janela de uso é checada em `-03:00` (os horários são convertidos antes), com `inicio` e `fim` na mesma data local, e a sobreposição é semiaberta: reservas que só encostam não conflitam.
 
 **Log do servidor MCP num wrapper ASGI.** Cada request vira uma linha no stderr (método, id, `name` ou `uri`, `traceparent` e `retry=sim`), feita por um wrapper ASGI na frente do app do SDK (`servidor-mcp/log_asgi.py`) e não pelo `mcp.middleware`, porque o middleware do SDK não vê os requests rejeitados antes do dispatch (`_meta` incompleto, headers espelhados divergentes). O wrapper lê o corpo do POST e o repassa intacto. A validação do `_meta` (`-32602`, HTTP 400) e dos headers espelhados (`-32020`) é a do próprio SDK.
 
@@ -129,7 +180,7 @@ O `Client` é único por processo e fica aberto numa task própria (o task group
 Última execução, num clone limpo (`uv sync --frozen`, `.env` gerado pelo README), com os dois processos recém-iniciados. Terminou com código de saída 0.
 
 ```
-trace-id desta execucao: 8c02c8a90a85d9a2247eb6833171ddac
+trace-id desta execucao: df0d0756b642ceb53398f3c6b8f835d4
 procure esse valor no stderr do servidor MCP para conferir a propagacao do traceparent.
 
 PASS 01 tools/list traz as tres tools
