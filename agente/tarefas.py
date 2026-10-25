@@ -23,10 +23,13 @@ def novo_id(prefixo: str) -> str:
 class Pausa:
     """Estado interno de uma Task em INPUT_REQUIRED (fase 6). Nunca é serializado para o A2A."""
 
-    request_state: str
-    chave: str
-    opcoes: list[str]
-    args: dict[str, Any]
+    request_state: str  # opaco: guardado e ecoado, nunca decodificado
+    chave: str  # única chave de inputRequests
+    opcoes: list[str]  # alternativas, na ordem do enum
+    args: dict[str, Any]  # arguments originais do tools/call
+    tool: str
+    politica: str  # versão já lida na primeira chamada
+    traceparent: str | None  # traceparent de entrada da Task
 
 
 @dataclass

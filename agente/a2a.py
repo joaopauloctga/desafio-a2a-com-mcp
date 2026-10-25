@@ -8,7 +8,7 @@ from starlette.responses import JSONResponse
 
 import ponte
 from pedido import Escolha, PedidoInvalido, Reserva, interpretar
-from tarefas import SUBMITTED, WORKING, FAILED, Store, Task
+from tarefas import INPUT_REQUIRED, SUBMITTED, WORKING, FAILED, Store, Task
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -60,6 +60,8 @@ async def send_message(params, mcp, traceparent: str | None) -> dict:
     async with task.trava:
         if task.terminal:
             raise ErroRpc(UNSUPPORTED_OPERATION, f"Task {task_id} ja terminou em {task.estado}")
+        if task.estado != INPUT_REQUIRED:
+            raise ErroRpc(UNSUPPORTED_OPERATION, f"Task {task_id} nao aguarda continuacao (estado {task.estado})")
         task.historico.append(mensagem)
         await _processar(task, texto, mcp, traceparent, continuacao=True)
     return task.para_json()
@@ -70,16 +72,19 @@ async def _processar(task: Task, texto: str, mcp, traceparent: str | None, conti
     try:
         pedido = interpretar(texto)
     except PedidoInvalido as erro:
-        task.mudar(FAILED, str(erro))
+        if continuacao:  # Task pausada: texto fora do formato não a derruba, repete a pergunta
+            await ponte.retomar(task, None, mcp, traceparent)
+        else:
+            task.mudar(FAILED, str(erro))
         return
     try:
-        if continuacao and isinstance(pedido, Escolha):
-            await ponte.retomar(task, pedido, mcp, traceparent)
-        elif not continuacao and isinstance(pedido, Reserva):
+        if continuacao:
+            # Qualquer coisa que não seja uma escolha (ex.: um novo `reservar ...`) repete a pergunta.
+            await ponte.retomar(task, pedido if isinstance(pedido, Escolha) else None, mcp, traceparent)
+        elif isinstance(pedido, Reserva):
             await ponte.executar(task, pedido, mcp, traceparent)
         else:
-            task.mudar(FAILED, "Pedido incompativel com o estado da Task: "
-                       + ("use escolha=<sala id> ou escolha=recusar" if continuacao else "use reservar sala=... para abrir uma Task"))
+            task.mudar(FAILED, "Pedido incompativel com o estado da Task: use reservar sala=... para abrir uma Task")
     except Exception:
         # Nenhuma Task fica presa em WORKING. O detalhe vai só para o stderr, nunca para a resposta A2A.
         log.exception("Task %s: erro inesperado", task.id)
